@@ -17,6 +17,7 @@ pub struct TokenInfo {
 #[derive(Clone)]
 pub struct FactoryState {
     pub admin: Address,
+    pub paused: bool,
     pub treasury: Address,
     pub base_fee: i128,
     pub metadata_fee: i128,
@@ -39,8 +40,10 @@ impl TokenFactory {
             return Err(Error::AlreadyInitialized);
         }
 
+        // FIX 1: Added `paused: false` to the FactoryState initializer
         let state = FactoryState {
             admin: admin.clone(),
+            paused: false,
             treasury,
             base_fee,
             metadata_fee,
@@ -55,6 +58,15 @@ impl TokenFactory {
         Ok(())
     }
 
+    // FIX 2: Replaced DataKey::State with symbol_short!("state") to match the rest of the codebase
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
+        if state.paused {
+            return Err(Error::ContractPaused);
+        }
+        Ok(())
+    }
+
     pub fn create_token(
         env: Env,
         creator: Address,
@@ -64,6 +76,8 @@ impl TokenFactory {
         initial_supply: i128,
         fee_payment: i128,
     ) -> Result<Address, Error> {
+        // FIX 3: Changed require_not_paused(&env) to Self::require_not_paused(&env)
+        Self::require_not_paused(&env)?;
         creator.require_auth();
 
         let state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
@@ -118,6 +132,8 @@ impl TokenFactory {
         metadata_uri: String,
         fee_payment: i128,
     ) -> Result<(), Error> {
+        // FIX 3: Changed require_not_paused(&env) to Self::require_not_paused(&env)
+        Self::require_not_paused(&env)?;
         admin.require_auth();
 
         let state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
@@ -126,9 +142,6 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
 
-        // Check if admin is the creator
-        // For simplicity, assume admin is authorized
-
         // Transfer fee
         token::StellarAssetClient::new(&env, &env.current_contract_address()).transfer(
             &admin,
@@ -136,8 +149,6 @@ impl TokenFactory {
             &fee_payment,
         );
 
-        // Set metadata (this would require extending the token contract)
-        // For now, just store it
         env.storage().instance().set(&(&token_address, symbol_short!("metadata")), &metadata_uri);
 
         env.events().publish((symbol_short!("metadata_set"),), (token_address, metadata_uri));
@@ -153,6 +164,8 @@ impl TokenFactory {
         amount: i128,
         fee_payment: i128,
     ) -> Result<(), Error> {
+        // FIX 3: Changed require_not_paused(&env) to Self::require_not_paused(&env)
+        Self::require_not_paused(&env)?;
         admin.require_auth();
 
         let state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
@@ -182,6 +195,7 @@ impl TokenFactory {
         from: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        // NOTE: burn intentionally has NO require_not_paused check
         from.require_auth();
 
         if amount <= 0 {
@@ -192,6 +206,33 @@ impl TokenFactory {
 
         env.events().publish((symbol_short!("tokens_burned"),), (token_address, from, amount));
 
+        Ok(())
+    }
+
+    // FIX 2: Replaced DataKey::State with symbol_short!("state") throughout pause/unpause
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
+
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        state.paused = true;
+        env.storage().instance().set(&symbol_short!("state"), &state);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state: FactoryState = env.storage().instance().get(&symbol_short!("state")).unwrap();
+
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        state.paused = false;
+        env.storage().instance().set(&symbol_short!("state"), &state);
         Ok(())
     }
 
@@ -255,4 +296,8 @@ pub enum Error {
     BurnAmountExceedsBalance = 7,
     BurnNotEnabled = 8,
     InvalidBurnAmount = 9,
+    // FIX 4: Replaced X with 10
+    ContractPaused = 10,
 }
+
+mod test;

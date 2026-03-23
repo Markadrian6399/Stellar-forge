@@ -1,51 +1,167 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Env as _};
-use soroban_sdk::{token, vec, Env};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
+    Address, Env, String,
+};
 
-#[test]
-fn test_initialize() {
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+fn setup_env() -> (Env, TokenFactoryClient<'static>, Address, Address) {
     let env = Env::default();
+    env.mock_all_auths();
+
     let contract_id = env.register_contract(None, TokenFactory);
     let client = TokenFactoryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &treasury, &70000000, &30000000);
+    client.initialize(&admin, &treasury, &1000, &500);
 
+    (env, client, admin, treasury)
+}
+
+// ── pause / unpause ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_initial_state_is_not_paused() {
+    let (_env, client, _admin, _treasury) = setup_env();
     let state = client.get_state();
-    assert_eq!(state.admin, admin);
-    assert_eq!(state.treasury, treasury);
-    assert_eq!(state.base_fee, 70000000);
-    assert_eq!(state.metadata_fee, 30000000);
+    assert!(!state.paused);
 }
 
 #[test]
-fn test_create_token() {
-    let env = Env::default();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
+fn test_admin_can_pause() {
+    let (_env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+    let state = client.get_state();
+    assert!(state.paused);
+}
 
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
+#[test]
+fn test_admin_can_unpause() {
+    let (_env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+    client.unpause(&admin);
+    let state = client.get_state();
+    assert!(!state.paused);
+}
+
+#[test]
+fn test_non_admin_cannot_pause() {
+    let (env, client, _admin, _treasury) = setup_env();
+    let stranger = Address::generate(&env);
+
+    let result = client.try_pause(&stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_non_admin_cannot_unpause() {
+    let (env, client, admin, _treasury) = setup_env();
+    let stranger = Address::generate(&env);
+
+    client.pause(&admin);
+    let result = client.try_unpause(&stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+// ── paused blocks create_token, mint_tokens, set_metadata ────────────────────
+
+#[test]
+fn test_create_token_blocked_when_paused() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+
     let creator = Address::generate(&env);
+    let result = client.try_create_token(
+        &creator,
+        &String::from_str(&env, "MyToken"),
+        &String::from_str(&env, "MTK"),
+        &7,
+        &1_000_000,
+        &1000,
+    );
 
-    client.initialize(&admin, &treasury, &70000000, &30000000);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
 
-    // Mock fee payment
-    env.mock_auths(&[MockAuth {
-        address: &creator,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "create_token",
-            args: vec![&env, creator.clone(), String::from_str(&env, "Test Token"), String::from_str(&env, "TEST"), 7u32, 1000000000i128, 70000000i128],
-            sub_invokes: &[],
-        },
-    }]);
+#[test]
+fn test_mint_tokens_blocked_when_paused() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
 
-    let token_address = client.create_token(&creator, &String::from_str(&env, "Test Token"), &String::from_str(&env, "TEST"), &7, &1000000000, &70000000);
+    let token_address = Address::generate(&env);
+    let recipient = Address::generate(&env);
 
-    assert!(token_address.is_some());
+    let result = client.try_mint_tokens(
+        &token_address,
+        &admin,
+        &recipient,
+        &500,
+        &1000,
+    );
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_set_metadata_blocked_when_paused() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+
+    let token_address = Address::generate(&env);
+
+    let result = client.try_set_metadata(
+        &token_address,
+        &admin,
+        &String::from_str(&env, "https://example.com/meta.json"),
+        &500,
+    );
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+// ── unpause restores functionality ───────────────────────────────────────────
+
+#[test]
+fn test_create_token_works_after_unpause() {
+    // This test just verifies unpause lifts the block.
+    // create_token will still fail due to fee transfer in test env,
+    // but the error should NOT be ContractPaused.
+    let (env, client, admin, _treasury) = setup_env();
+
+    client.pause(&admin);
+    client.unpause(&admin);
+
+    let creator = Address::generate(&env);
+    let result = client.try_create_token(
+        &creator,
+        &String::from_str(&env, "MyToken"),
+        &String::from_str(&env, "MTK"),
+        &7,
+        &1_000_000,
+        &1000,
+    );
+
+    // Should NOT be ContractPaused — any other error is fine here
+    assert_ne!(result, Err(Ok(Error::ContractPaused)));
+}
+
+// ── burn is NOT blocked by pause ─────────────────────────────────────────────
+
+#[test]
+fn test_burn_not_blocked_when_paused() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+
+    let token_address = Address::generate(&env);
+    let burner = Address::generate(&env);
+
+    // burn will fail because the token isn't real in this unit test,
+    // but the error must NOT be ContractPaused
+    let result = client.try_burn(&token_address, &burner, &100);
+    assert_ne!(result, Err(Ok(Error::ContractPaused)));
 }

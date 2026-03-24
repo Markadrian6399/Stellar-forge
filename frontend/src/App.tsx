@@ -1,10 +1,28 @@
 import { useState } from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './App.css'
 import { WalletProvider } from './context/WalletContext'
 import { useWallet } from './hooks/useWallet'
 import { Button } from './components/UI/Button'
 import { Spinner } from './components/UI/Spinner'
 import { truncateAddress, formatXLM } from './utils/formatting'
+import { NavBar } from './components/NavBar'
+import { Home } from './components/Home'
+import { CreateToken } from './components/CreateToken'
+import { MintForm } from './components/MintForm'
+import { BurnForm } from './components/BurnForm'
+import { Dashboard } from './components/Dashboard'
+import { TokenDetail } from './components/TokenDetail'
+
+const ProtectedRoute: React.FC<{ children: JSX.Element }> = ({ children }) => {
+  const { wallet } = useWallet()
+
+  if (!wallet.isConnected) {
+    return <Navigate to="/" replace />
+  }
+
+  return children
+}
 
 function AppContent() {
   const [toast, setToast] = useState<string | null>(null)
@@ -37,7 +55,7 @@ function AppContent() {
       <div className="min-h-screen bg-gray-100">
         <header className="bg-white shadow" role="banner">
           <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">StellarForge</h1>
                 <p className="mt-2 text-sm text-gray-600">Stellar Token Deployer</p>
@@ -83,6 +101,8 @@ function AppContent() {
                 )}
               </div>
             </div>
+
+            <NavBar />
           </div>
         </header>
 
@@ -98,21 +118,16 @@ function AppContent() {
               </div>
             )}
 
-            <div className="border-4 border-dashed border-gray-200 rounded-lg p-8">
-              <div className="text-center">
-                <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-                  Welcome to Nova Launch
-                </h2>
-                <p className="text-gray-600 mb-8">
-                  Deploy your custom tokens on Stellar blockchain
-                </p>
-                <button
-                  onClick={handleGetStarted}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                >
-                  Get Started
-                </button>
-              </div>
+            <div className="bg-white p-6 rounded-lg shadow-sm">
+              <Routes>
+                <Route path="/" element={<Home onGetStarted={handleGetStarted} />} />
+                <Route path="/create" element={<ProtectedRoute><CreateToken /></ProtectedRoute>} />
+                <Route path="/mint" element={<ProtectedRoute><MintForm /></ProtectedRoute>} />
+                <Route path="/burn" element={<ProtectedRoute><BurnForm /></ProtectedRoute>} />
+                <Route path="/tokens" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+                <Route path="/tokens/:address" element={<ProtectedRoute><TokenDetail /></ProtectedRoute>} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
             </div>
           </div>
         </main>
@@ -137,7 +152,9 @@ function AppContent() {
 function App() {
   return (
     <WalletProvider>
-      <AppContent />
+      <BrowserRouter>
+        <AppContent />
+      </BrowserRouter>
     </WalletProvider>
   )
 }
